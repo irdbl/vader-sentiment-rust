@@ -5,6 +5,7 @@
  * Weblogs and Social Media (ICWSM-14). Ann Arbor, MI, June 2014.
  **/
 
+use std::borrow::Cow;
 use std::cmp::min;
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
@@ -291,12 +292,17 @@ impl<'a> ParsedText<'a> {
 }
 
 // Checks if all letters in token are capitalized (matches Python's str.isupper())
-// Returns true if there is at least one uppercase letter and no lowercase letters
+// Single pass: returns true if at least one uppercase and no lowercase letters
 #[inline]
 fn is_all_caps(token: &str) -> bool {
-    let bytes = token.as_bytes();
-    bytes.iter().any(|b| b.is_ascii_uppercase())
-        && !bytes.iter().any(|b| b.is_ascii_lowercase())
+    let mut has_upper = false;
+    for &b in token.as_bytes() {
+        if b.is_ascii_lowercase() {
+            return false;
+        }
+        has_upper |= b.is_ascii_uppercase();
+    }
+    has_upper
 }
 
 // Checks if token is in the list of negation tokens
@@ -426,9 +432,9 @@ impl<'a> SentimentIntensityAnalyzer<'a> {
     fn sentiment_valence(&self, parsed: &ParsedText, word: &UniCase<&str>, i: usize) -> f64 {
         let mut valence = 0f64;
         let tokens = &parsed.tokens;
-        let word_in_lexicon = self.lexicon.contains_key(word);
-        if let Some(&word_valence) = self.lexicon.get(word) {
-            valence = word_valence;
+        let word_valence = self.lexicon.get(word).copied();
+        if let Some(wv) = word_valence {
+            valence = wv;
             if is_all_caps(word.as_ref()) && parsed.has_mixed_caps {
                 if valence > 0f64 {
                     valence += C_INCR;
@@ -463,12 +469,12 @@ impl<'a> SentimentIntensityAnalyzer<'a> {
         }
 
         // "no" preceding current word: negate using raw lexicon valence
-        if word_in_lexicon {
+        if let Some(base) = word_valence {
             if (i > 0 && tokens[i - 1] == *STATIC_NO)
                 || (i > 1 && tokens[i - 2] == *STATIC_NO)
                 || (i > 2 && tokens[i - 3] == *STATIC_NO
                     && (tokens[i - 1] == *STATIC_OR || tokens[i - 1] == *STATIC_NOR)) {
-                valence = self.lexicon.get(word).copied().unwrap_or(0.0) * NEGATION_SCALAR;
+                valence = base * NEGATION_SCALAR;
             }
         }
 
@@ -477,17 +483,26 @@ impl<'a> SentimentIntensityAnalyzer<'a> {
 }
 
 // Removes emoji and appends their description using Aho-Corasick SIMD-accelerated matching
-fn append_emoji_descriptions(text: &str) -> String {
+// Returns Cow::Borrowed when no emojis found (zero-alloc fast path)
+fn append_emoji_descriptions(text: &str) -> Cow<'_, str> {
     let (ref ac, ref descriptions) = *EMOJI_AC;
-    let matches: Vec<_> = ac.find_iter(text).collect();
-    if matches.is_empty() {
-        return text.to_string();
-    }
+    let mut iter = ac.find_iter(text);
+    let first = match iter.next() {
+        Some(m) => m,
+        None => return Cow::Borrowed(text),
+    };
     let mut result = String::with_capacity(text.len() + text.len() / 2);
     let mut last_end = 0;
-    for mat in &matches {
-        let before = &text[last_end..mat.start()];
-        result.push_str(before);
+    // Process first match
+    result.push_str(&text[last_end..first.start()]);
+    if !result.is_empty() && !result.ends_with(' ') {
+        result.push(' ');
+    }
+    result.push_str(descriptions[first.pattern().as_usize()]);
+    last_end = first.end();
+    // Process remaining matches
+    for mat in iter {
+        result.push_str(&text[last_end..mat.start()]);
         if !result.is_empty() && !result.ends_with(' ') {
             result.push(' ');
         }
@@ -495,7 +510,7 @@ fn append_emoji_descriptions(text: &str) -> String {
         last_end = mat.end();
     }
     result.push_str(&text[last_end..]);
-    result
+    Cow::Owned(result)
 }
 
 /// Check for specific patterns or tokens, and modify sentiment as needed
