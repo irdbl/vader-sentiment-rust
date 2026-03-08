@@ -1,75 +1,112 @@
-# VADER-Sentiment-Analysis
+# vader-sentiment-rust
 
+A high-performance Rust port of [VADER](https://github.com/cjhutto/vaderSentiment) (Valence Aware Dictionary and sEntiment Reasoner), a lexicon and rule-based sentiment analysis tool attuned to sentiments expressed in social media.
 
+This fork includes upstream bug fixes from the original Python VADER and significant performance optimizations (~2x faster than the original Rust port).
 
-VADER (Valence Aware Dictionary and sEntiment Reasoner) is a lexicon and rule-based sentiment analysis tool that is *specifically attuned to sentiments expressed in social media*. It is fully open-sourced under the [MIT License](http://choosealicense.com/). **This is a port of the original module**, which was written in Python. If you'd like to make a contribution, please checkout  [the original author's work here](https://github.com/cjhutto/vaderSentiment).
+## Usage
 
-# Use Cases
-	* examples of typical use cases for sentiment analysis, including proper handling of sentences with:
+Add to your `Cargo.toml`:
 
-		- typical negations (e.g., "not good")
-		- use of contractions as negations (e.g., "wasn't very good")
-		- conventional use of punctuation to signal increased sentiment intensity (e.g., "Good!!!")
-		- conventional use of word-shape to signal emphasis (e.g., using ALL CAPS for words/phrases)
-		- using degree modifiers to alter sentiment intensity (e.g., intensity boosters such as "very" and intensity dampeners such as "kind of")
-		- understanding many sentiment-laden slang words (e.g., 'sux')
-		- understanding many sentiment-laden slang words as modifiers such as 'uber' or 'friggin' or 'kinda'
-		- understanding many sentiment-laden emoticons such as :) and :D
-		- translating utf-8 encoded emojis such as 💘 and 💋 and 😁
-		- understanding sentiment-laden initialisms and acronyms (for example: 'lol')
-
-	* more examples of tricky sentences that confuse other sentiment analysis tools
-	* example for how VADER can work in conjunction with NLTK to do sentiment analysis on longer texts...i.e., decomposing paragraphs, articles/reports/publications, or novels into sentence-level analyses
-	* examples of a concept for assessing the sentiment of images, video, or other tagged multimedia content
-	* if you have access to the Internet, the demo has an example of how VADER can work with analyzing sentiment of texts in other languages (non-English text sentences).
-
-# Usage
-
-### Code
-```rust
-  extern crate vader_sentiment;
-
-  fn main() {
-      let analyzer = vader_sentiment::SentimentIntensityAnalyzer::new();
-      println!("{:#?}", analyzer.polarity_scores("VADER is smart, handsome, and funny."));
-      println!("{:#?}", analyzer.polarity_scores("VADER is VERY SMART, handsome, and FUNNY."));
-  }
+```toml
+[dependencies]
+vader_sentiment = { git = "https://github.com/irdbl/vader-sentiment-rust" }
 ```
 
-### Output
-``` rust
-{
-    "compound": 0.8316320352807864,
-    "pos": 0.7457627118644068,
-    "neg": 0.0,
-    "neu": 0.2542372881355932
-}
-{
-    "compound": 0.9226571915792521,
-    "pos": 0.7540988645515071,
-    "neg": 0.0,
-    "neu": 0.24590113544849293
-}
-```
-
-# Citation Information
-
-If you use either the dataset or any of the VADER sentiment analysis tools (VADER sentiment lexicon or Rust code for rule-based sentiment analysis engine) in your research, please cite the above paper. For example:  
-
-  **Hutto, C.J. & Gilbert, E.E. (2014). VADER: A Parsimonious Rule-based Model for Sentiment Analysis of Social Media Text. Eighth International Conference on Weblogs and Social Media (ICWSM-14). Ann Arbor, MI, June 2014.**
-
-For questions, please contact:
-C.J. Hutto
-Georgia Institute of Technology, Atlanta, GA 30032  
-cjhutto [at] gatech [dot] edu
-
-# Demo
-You can run a full demo including cases with sarcasm, negation, idioms, and punctuation with this code.
+### Basic
 
 ```rust
-extern crate vader_sentiment;
+use vader_sentiment::SentimentIntensityAnalyzer;
 
-fn main() {
-    vader_sentiment::demo::run_demo();
+let analyzer = SentimentIntensityAnalyzer::new();
+let scores = analyzer.polarity_scores("VADER is smart, handsome, and funny.");
+
+println!("compound: {}", scores.compound);  // 0.8316
+println!("positive: {}", scores.positive);  // 0.7458
+println!("neutral:  {}", scores.neutral);   // 0.2542
+println!("negative: {}", scores.negative);  // 0.0
+```
+
+### High-throughput (reusable scratch buffers)
+
+```rust
+use vader_sentiment::{SentimentIntensityAnalyzer, Scratch};
+
+let analyzer = SentimentIntensityAnalyzer::new();
+let mut scratch = Scratch::new();
+
+let texts = vec!["Great movie!", "Terrible service.", "It was okay."];
+for text in &texts {
+    let scores = analyzer.polarity_scores_with_scratch(text, &mut scratch);
+    println!("{}: {:.4}", text, scores.compound);
 }
 ```
+
+### Parallel batch processing
+
+Enable the `parallel` feature for Rayon-powered batch analysis:
+
+```toml
+vader_sentiment = { git = "https://github.com/irdbl/vader-sentiment-rust", features = ["parallel"] }
+```
+
+```rust
+let scores = vader_sentiment::polarity_scores_batch(&["Great!", "Terrible!", "Meh."]);
+```
+
+## What VADER handles
+
+- Negation ("not good", "wasn't very good")
+- Punctuation emphasis ("Good!!!")
+- Capitalization for emphasis ("VERY SMART")
+- Degree modifiers ("very", "kind of", "barely")
+- Slang ("sux", "uber", "friggin")
+- Emoticons (`:)`, `:D`, `:^(`)
+- UTF-8 emoji (💘, 😁, 💋)
+- Initialisms and acronyms ("lol")
+- Contrastive conjunctions ("good, but not great")
+- Special case idioms ("the bomb", "bad ass", "kiss of death")
+
+## Performance
+
+~2x faster than the original Rust port, benchmarked on Apple M4:
+
+| Benchmark | Time |
+|---|---|
+| Short text (7 words) | 445 ns |
+| Long text (paragraph) | 4.2 µs |
+| Text with emoji | 2.0 µs |
+| 1K batch | 378 µs |
+| 10K batch | 3.8 ms |
+
+Key optimizations:
+- `SentimentScores` struct instead of `HashMap` return
+- Aho-Corasick SIMD-accelerated emoji matching
+- FxHash for all internal hash maps
+- `memchr` SIMD punctuation counting
+- Scratch buffer API for zero-allocation hot paths
+- ASCII fast-path bypassing emoji scan
+- Compile-time punctuation bitset
+
+Run benchmarks: `cargo bench`
+
+## Upstream fixes ported
+
+Fixes from the original Python VADER that were missing in the Rust port:
+
+- **"no" negation** — "no good" correctly produces negative sentiment
+- **`least_check` logic** — fixed impossible `&&` condition
+- **Special case idioms** — added "beating heart", "broken heart", "bus stop"
+- **Single-char tokens** — no longer filtered out (matches Python behavior)
+- **Strip punctuation threshold** — changed from `< 3` to `<= 2`
+- **Curly quote negation** — "won\u{2019}t" handled like "won't"
+
+## Citation
+
+If you use VADER in your research, please cite:
+
+> Hutto, C.J. & Gilbert, E.E. (2014). VADER: A Parsimonious Rule-based Model for Sentiment Analysis of Social Media Text. *Eighth International Conference on Weblogs and Social Media (ICWSM-14)*. Ann Arbor, MI, June 2014.
+
+## License
+
+MIT
