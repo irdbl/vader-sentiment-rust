@@ -7,12 +7,38 @@
 
 use std::borrow::Cow;
 use std::cmp::min;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 use std::sync::LazyLock;
 
 use aho_corasick::AhoCorasick;
 use memchr::memchr_iter;
 use unicase::UniCase;
+
+// FxHash — fast, non-cryptographic hasher for short string keys.
+// SipHash (default) is ~3x slower on short keys due to its DoS-resistance overhead,
+// which we don't need for static dictionaries with known keys.
+pub struct FxHasher(u64);
+
+impl Default for FxHasher {
+    #[inline]
+    fn default() -> Self { FxHasher(0) }
+}
+
+impl Hasher for FxHasher {
+    #[inline]
+    fn finish(&self) -> u64 { self.0 }
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = (self.0.rotate_left(5) ^ (b as u64)).wrapping_mul(0x517cc1b727220a95);
+        }
+    }
+}
+
+pub type FxBuildHasher = BuildHasherDefault<FxHasher>;
+pub type FxHashMap<K, V> = HashMap<K, V, FxBuildHasher>;
+pub type FxHashSet<K> = std::collections::HashSet<K, FxBuildHasher>;
 
 #[cfg(test)]
 mod tests;
@@ -59,7 +85,7 @@ fn is_punctuation(c: char) -> bool {
 
 // --- Static data (LazyLock replaces lazy_static + maplit) ---
 
-static NEGATION_TOKENS: LazyLock<HashSet<UniCase<&'static str>>> = LazyLock::new(|| {
+static NEGATION_TOKENS: LazyLock<FxHashSet<UniCase<&'static str>>> = LazyLock::new(|| {
     let words = [
         "aint", "arent", "cannot", "cant", "couldnt", "darent", "didnt", "doesnt",
         "ain't", "aren't", "can't", "couldn't", "daren't", "didn't", "doesn't",
@@ -70,14 +96,14 @@ static NEGATION_TOKENS: LazyLock<HashSet<UniCase<&'static str>>> = LazyLock::new
         "oughtn't", "shan't", "shouldn't", "uh-uh", "wasn't", "weren't",
         "without", "wont", "wouldnt", "won't", "wouldn't", "rarely", "seldom", "despite",
     ];
-    let mut set = HashSet::with_capacity(words.len());
+    let mut set = FxHashSet::with_capacity_and_hasher(words.len(), FxBuildHasher::default());
     for w in &words {
         set.insert(UniCase::new(*w));
     }
     set
 });
 
-static BOOSTER_DICT: LazyLock<HashMap<UniCase<&'static str>, f64>> = LazyLock::new(|| {
+static BOOSTER_DICT: LazyLock<FxHashMap<UniCase<&'static str>, f64>> = LazyLock::new(|| {
     let entries: &[(&str, f64)] = &[
         ("absolutely", B_INCR), ("amazingly", B_INCR), ("awfully", B_INCR),
         ("completely", B_INCR), ("considerable", B_INCR), ("considerably", B_INCR),
@@ -112,20 +138,20 @@ static BOOSTER_DICT: LazyLock<HashMap<UniCase<&'static str>, f64>> = LazyLock::n
         ("slightly", B_DECR), ("somewhat", B_DECR),
         ("sort of", B_DECR), ("sorta", B_DECR), ("sortof", B_DECR), ("sort-of", B_DECR),
     ];
-    let mut map = HashMap::with_capacity(entries.len());
+    let mut map = FxHashMap::with_capacity_and_hasher(entries.len(), FxBuildHasher::default());
     for &(w, v) in entries {
         map.insert(UniCase::new(w), v);
     }
     map
 });
 
-static SPECIAL_CASE_IDIOMS: LazyLock<HashMap<UniCase<&'static str>, f64>> = LazyLock::new(|| {
+static SPECIAL_CASE_IDIOMS: LazyLock<FxHashMap<UniCase<&'static str>, f64>> = LazyLock::new(|| {
     let entries: &[(&str, f64)] = &[
         ("the shit", 3.0), ("the bomb", 3.0), ("bad ass", 1.5), ("badass", 1.5),
         ("bus stop", 0.0), ("yeah right", -2.0), ("kiss of death", -1.5),
         ("to die for", 3.0), ("beating heart", 3.1), ("broken heart", -2.9),
     ];
-    let mut map = HashMap::with_capacity(entries.len());
+    let mut map = FxHashMap::with_capacity_and_hasher(entries.len(), FxBuildHasher::default());
     for &(w, v) in entries {
         map.insert(UniCase::new(w), v);
     }
@@ -140,11 +166,11 @@ static SPECIAL_IDIOMS_SPLIT: LazyLock<Vec<(Vec<UniCase<&'static str>>, f64)>> = 
     }).collect()
 });
 
-pub static LEXICON: LazyLock<HashMap<UniCase<&'static str>, f64>> = LazyLock::new(|| {
+pub static LEXICON: LazyLock<FxHashMap<UniCase<&'static str>, f64>> = LazyLock::new(|| {
     parse_raw_lexicon(RAW_LEXICON)
 });
 
-pub static EMOJI_LEXICON: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
+pub static EMOJI_LEXICON: LazyLock<FxHashMap<&'static str, &'static str>> = LazyLock::new(|| {
     parse_raw_emoji_lexicon(RAW_EMOJI_LEXICON)
 });
 
@@ -193,9 +219,9 @@ pub struct SentimentScores {
 }
 
 /// Takes the raw text of the lexicon files and creates HashMaps
-pub fn parse_raw_lexicon(raw_lexicon: &str) -> HashMap<UniCase<&str>, f64> {
+pub fn parse_raw_lexicon(raw_lexicon: &str) -> FxHashMap<UniCase<&str>, f64> {
     let lines: Vec<&str> = raw_lexicon.trim_end_matches('\n').split('\n').collect();
-    let mut lex_dict = HashMap::with_capacity(lines.len());
+    let mut lex_dict = FxHashMap::with_capacity_and_hasher(lines.len(), FxBuildHasher::default());
     for line in lines {
         if line.is_empty() {
             continue;
@@ -208,9 +234,9 @@ pub fn parse_raw_lexicon(raw_lexicon: &str) -> HashMap<UniCase<&str>, f64> {
     lex_dict
 }
 
-pub fn parse_raw_emoji_lexicon(raw_emoji_lexicon: &str) -> HashMap<&str, &str> {
+pub fn parse_raw_emoji_lexicon(raw_emoji_lexicon: &str) -> FxHashMap<&str, &str> {
     let lines: Vec<&str> = raw_emoji_lexicon.trim_end_matches('\n').split('\n').collect();
-    let mut emoji_dict = HashMap::with_capacity(lines.len());
+    let mut emoji_dict = FxHashMap::with_capacity_and_hasher(lines.len(), FxBuildHasher::default());
     for line in lines {
         if line.is_empty() {
             continue;
@@ -362,7 +388,7 @@ fn sum_sentiment_scores(scores: &[f64]) -> (f64, f64, u32) {
 }
 
 pub struct SentimentIntensityAnalyzer<'a> {
-    lexicon: &'a HashMap<UniCase<&'a str>, f64>,
+    lexicon: &'a FxHashMap<UniCase<&'a str>, f64>,
 }
 
 impl<'a> SentimentIntensityAnalyzer<'a> {
@@ -372,7 +398,7 @@ impl<'a> SentimentIntensityAnalyzer<'a> {
         }
     }
 
-    pub fn from_lexicon<'b>(lexicon: &'b HashMap<UniCase<&str>, f64>) ->
+    pub fn from_lexicon<'b>(lexicon: &'b FxHashMap<UniCase<&str>, f64>) ->
                                         SentimentIntensityAnalyzer<'b> {
         SentimentIntensityAnalyzer {
             lexicon,
@@ -498,6 +524,10 @@ impl<'a> SentimentIntensityAnalyzer<'a> {
 // Removes emoji and appends their description using Aho-Corasick SIMD-accelerated matching
 // Returns Cow::Borrowed when no emojis found (zero-alloc fast path)
 fn append_emoji_descriptions(text: &str) -> Cow<'_, str> {
+    // Fast path: pure ASCII text cannot contain emoji
+    if text.is_ascii() {
+        return Cow::Borrowed(text);
+    }
     let (ref ac, ref descriptions) = *EMOJI_AC;
     let mut iter = ac.find_iter(text);
     let first = match iter.next() {

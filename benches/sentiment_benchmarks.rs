@@ -88,11 +88,10 @@ fn bench_batch(c: &mut Criterion) {
 }
 
 fn bench_punctuation_emphasis(c: &mut Criterion) {
+    let analyzer = SentimentIntensityAnalyzer::new();
     c.bench_function("punctuation_emphasis", |b| {
         let text = "This is amazing!!! Really??? Yes!!! Are you sure??? Absolutely!!!";
         b.iter(|| {
-            // Access the private function through polarity_scores
-            let analyzer = SentimentIntensityAnalyzer::new();
             analyzer.polarity_scores(black_box(text))
         })
     });
