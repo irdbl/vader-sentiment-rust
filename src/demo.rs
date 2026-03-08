@@ -22,7 +22,7 @@ pub fn run_demo() {
                          "Make sure you :) or :D today!",  // emoticons handled
                          "Catch utf-8 emoji such as 💘 and 💋 and 😁",  // emojis handled
                          "Not bad at all"]; // Capitalized negation
-    let analyzer = ::SentimentIntensityAnalyzer::new();
+    let analyzer = crate::SentimentIntensityAnalyzer::new();
     println!("----------------------------------------------------");
     println!(" - Analyze typical example cases, including handling of:");
     println!("  -- negations");

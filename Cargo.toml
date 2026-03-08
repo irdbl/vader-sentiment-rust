@@ -1,6 +1,7 @@
 [package]
 name = "vader_sentiment"
 version = "0.1.1"
+edition = "2021"
 authors = ["Chris <chriswong21@berkeley.edu>", "Mariana Meireles <mariana@psychonautgirl.space>"]
 license = "MIT"
 description = "Bindings for Rust from the original Python VaderSentiment analysis tool."
@@ -8,7 +9,18 @@ repository = "https://github.com/ckw017/vader-sentiment-rust"
 documentation = "https://docs.rs/vader_sentiment"
 
 [dependencies]
-regex = "1.3.1"
-maplit = "1.0.2"
-lazy_static = "1.4.0"
 unicase = "2.6.0"
+memchr = "2"
+aho-corasick = "1"
+rayon = { version = "1", optional = true }
+
+[features]
+default = []
+parallel = ["rayon"]
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "sentiment_benchmarks"
+harness = false
