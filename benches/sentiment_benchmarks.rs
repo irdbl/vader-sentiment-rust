@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
-use vader_sentiment::SentimentIntensityAnalyzer;
+use vader_sentiment::{SentimentIntensityAnalyzer, Scratch};
 
 fn short_texts() -> Vec<&'static str> {
     vec![
@@ -27,44 +27,49 @@ fn text_with_emojis() -> &'static str {
 
 fn bench_single_short(c: &mut Criterion) {
     let analyzer = SentimentIntensityAnalyzer::new();
+    let mut scratch = Scratch::new();
     c.bench_function("single_short_text", |b| {
         b.iter(|| {
-            analyzer.polarity_scores(black_box("VADER is smart, handsome, and funny!"))
+            analyzer.polarity_scores_with_scratch(black_box("VADER is smart, handsome, and funny!"), &mut scratch)
         })
     });
 }
 
 fn bench_single_long(c: &mut Criterion) {
     let analyzer = SentimentIntensityAnalyzer::new();
+    let mut scratch = Scratch::new();
     let text = long_text();
     c.bench_function("single_long_text", |b| {
         b.iter(|| {
-            analyzer.polarity_scores(black_box(text))
+            analyzer.polarity_scores_with_scratch(black_box(text), &mut scratch)
         })
     });
 }
 
 fn bench_with_emojis(c: &mut Criterion) {
     let analyzer = SentimentIntensityAnalyzer::new();
+    let mut scratch = Scratch::new();
     let text = text_with_emojis();
     c.bench_function("text_with_emojis", |b| {
         b.iter(|| {
-            analyzer.polarity_scores(black_box(text))
+            analyzer.polarity_scores_with_scratch(black_box(text), &mut scratch)
         })
     });
 }
 
 fn bench_without_emojis(c: &mut Criterion) {
     let analyzer = SentimentIntensityAnalyzer::new();
+    let mut scratch = Scratch::new();
     c.bench_function("text_without_emojis", |b| {
         b.iter(|| {
-            analyzer.polarity_scores(black_box("The plot was good, but the characters are uncompelling and the dialog is not great."))
+            analyzer.polarity_scores_with_scratch(black_box("The plot was good, but the characters are uncompelling and the dialog is not great."), &mut scratch)
         })
     });
 }
 
 fn bench_batch(c: &mut Criterion) {
     let analyzer = SentimentIntensityAnalyzer::new();
+    let mut scratch = Scratch::new();
     let texts = short_texts();
     let batch_1k: Vec<&str> = texts.iter().cycle().take(1000).copied().collect();
     let batch_10k: Vec<&str> = texts.iter().cycle().take(10_000).copied().collect();
@@ -73,14 +78,14 @@ fn bench_batch(c: &mut Criterion) {
     group.bench_with_input(BenchmarkId::new("1k", 1000), &batch_1k, |b, texts| {
         b.iter(|| {
             for text in texts {
-                black_box(analyzer.polarity_scores(text));
+                black_box(analyzer.polarity_scores_with_scratch(text, &mut scratch));
             }
         })
     });
     group.bench_with_input(BenchmarkId::new("10k", 10_000), &batch_10k, |b, texts| {
         b.iter(|| {
             for text in texts {
-                black_box(analyzer.polarity_scores(text));
+                black_box(analyzer.polarity_scores_with_scratch(text, &mut scratch));
             }
         })
     });
@@ -89,21 +94,23 @@ fn bench_batch(c: &mut Criterion) {
 
 fn bench_punctuation_emphasis(c: &mut Criterion) {
     let analyzer = SentimentIntensityAnalyzer::new();
+    let mut scratch = Scratch::new();
     c.bench_function("punctuation_emphasis", |b| {
         let text = "This is amazing!!! Really??? Yes!!! Are you sure??? Absolutely!!!";
         b.iter(|| {
-            analyzer.polarity_scores(black_box(text))
+            analyzer.polarity_scores_with_scratch(black_box(text), &mut scratch)
         })
     });
 }
 
 fn bench_negation_heavy(c: &mut Criterion) {
     let analyzer = SentimentIntensityAnalyzer::new();
+    let mut scratch = Scratch::new();
     c.bench_function("negation_heavy", |b| {
         b.iter(|| {
-            analyzer.polarity_scores(black_box(
+            analyzer.polarity_scores_with_scratch(black_box(
                 "I don't think this isn't not a bad idea, but it won't never work without doubt"
-            ))
+            ), &mut scratch)
         })
     });
 }

@@ -387,6 +387,24 @@ fn sum_sentiment_scores(scores: &[f64]) -> (f64, f64, u32) {
     (pos_sum, neg_sum, neu_count)
 }
 
+/// Reusable scratch buffers to eliminate per-call allocation churn.
+/// Create once and pass to `polarity_scores_with_scratch` for best throughput.
+pub struct Scratch {
+    lex_vals: Vec<Option<f64>>,
+    boost_vals: Vec<Option<f64>>,
+    sentiments: Vec<f64>,
+}
+
+impl Scratch {
+    pub fn new() -> Self {
+        Scratch {
+            lex_vals: Vec::new(),
+            boost_vals: Vec::new(),
+            sentiments: Vec::new(),
+        }
+    }
+}
+
 pub struct SentimentIntensityAnalyzer<'a> {
     lexicon: &'a FxHashMap<UniCase<&'a str>, f64>,
 }
@@ -438,33 +456,37 @@ impl<'a> SentimentIntensityAnalyzer<'a> {
     }
 
     pub fn polarity_scores(&self, text: &str) -> SentimentScores {
+        let mut scratch = Scratch::new();
+        self.polarity_scores_with_scratch(text, &mut scratch)
+    }
+
+    /// Analyze sentiment using reusable scratch buffers to avoid per-call allocations.
+    pub fn polarity_scores_with_scratch(&self, text: &str, scratch: &mut Scratch) -> SentimentScores {
         let text = append_emoji_descriptions(text);
         let parsedtext = ParsedText::from_text(&text);
         let tokens = &parsedtext.tokens;
 
-        // Pre-compute lexicon and booster values for all tokens (eliminates
-        // redundant HashMap lookups in inner loops)
-        let lex_vals: Vec<Option<f64>> = tokens.iter()
-            .map(|t| self.lexicon.get(t).copied())
-            .collect();
-        let boost_vals: Vec<Option<f64>> = tokens.iter()
-            .map(|t| BOOSTER_DICT.get(t).copied())
-            .collect();
-
-        let mut sentiments = Vec::with_capacity(tokens.len());
+        // Re-use scratch vecs: clear and refill (keeps allocated capacity)
+        scratch.lex_vals.clear();
+        scratch.lex_vals.extend(tokens.iter().map(|t| self.lexicon.get(t).copied()));
+        scratch.boost_vals.clear();
+        scratch.boost_vals.extend(tokens.iter().map(|t| BOOSTER_DICT.get(t).copied()));
+        scratch.sentiments.clear();
+        scratch.sentiments.reserve(tokens.len());
 
         for (i, word) in tokens.iter().enumerate() {
-            if boost_vals[i].is_some() {
-                sentiments.push(0f64);
+            if scratch.boost_vals[i].is_some() {
+                scratch.sentiments.push(0f64);
             } else if i < tokens.len() - 1 && word == &*STATIC_KIND
                                   && tokens[i + 1] == *STATIC_OF {
-                sentiments.push(0f64);
+                scratch.sentiments.push(0f64);
             } else {
-                sentiments.push(self.sentiment_valence(&parsedtext, word, i, &lex_vals, &boost_vals));
+                scratch.sentiments.push(self.sentiment_valence(
+                    &parsedtext, word, i, &scratch.lex_vals, &scratch.boost_vals));
             }
         }
-        but_check(tokens, &mut sentiments);
-        self.get_total_sentiment(&sentiments, parsedtext.punc_amplifier)
+        but_check(tokens, &mut scratch.sentiments);
+        self.get_total_sentiment(&scratch.sentiments, parsedtext.punc_amplifier)
     }
 
     fn sentiment_valence(&self, parsed: &ParsedText, word: &UniCase<&str>, i: usize,
