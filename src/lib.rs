@@ -307,6 +307,7 @@ fn is_all_caps(token: &str) -> bool {
 
 // Checks if token is in the list of negation tokens
 // Handles both ASCII apostrophe and Unicode right single quotation mark (U+2019)
+#[inline]
 fn is_negated(token: &UniCase<&str>) -> bool {
     if NEGATION_TOKENS.contains(token) {
         return true;
@@ -413,6 +414,13 @@ impl<'a> SentimentIntensityAnalyzer<'a> {
         let text = append_emoji_descriptions(text);
         let parsedtext = ParsedText::from_text(&text);
         let tokens = &parsedtext.tokens;
+
+        // Pre-compute lexicon values for all tokens (eliminates redundant HashMap
+        // lookups in the inner loop where each token's neighbors are checked)
+        let lex_vals: Vec<Option<f64>> = tokens.iter()
+            .map(|t| self.lexicon.get(t).copied())
+            .collect();
+
         let mut sentiments = Vec::with_capacity(tokens.len());
 
         for (i, word) in tokens.iter().enumerate() {
@@ -422,17 +430,18 @@ impl<'a> SentimentIntensityAnalyzer<'a> {
                                   && tokens[i + 1] == *STATIC_OF {
                 sentiments.push(0f64);
             } else {
-                sentiments.push(self.sentiment_valence(&parsedtext, word, i));
+                sentiments.push(self.sentiment_valence(&parsedtext, word, i, &lex_vals));
             }
         }
         but_check(tokens, &mut sentiments);
         self.get_total_sentiment(&sentiments, parsedtext.punc_amplifier)
     }
 
-    fn sentiment_valence(&self, parsed: &ParsedText, word: &UniCase<&str>, i: usize) -> f64 {
+    fn sentiment_valence(&self, parsed: &ParsedText, word: &UniCase<&str>, i: usize,
+                         lex_vals: &[Option<f64>]) -> f64 {
         let mut valence = 0f64;
         let tokens = &parsed.tokens;
-        let word_valence = self.lexicon.get(word).copied();
+        let word_valence = lex_vals[i];
         if let Some(wv) = word_valence {
             valence = wv;
             if is_all_caps(word.as_ref()) && parsed.has_mixed_caps {
@@ -443,8 +452,7 @@ impl<'a> SentimentIntensityAnalyzer<'a> {
                 }
             }
             for start_i in 0..3 {
-                if i > start_i && !self.lexicon.contains_key(
-                                &tokens[i - start_i - 1]) {
+                if i > start_i && lex_vals[i - start_i - 1].is_none() {
                     let mut s = scalar_inc_dec(&tokens[i - start_i - 1], valence, parsed.has_mixed_caps);
                     if start_i == 1 {
                         s *= 0.95;
@@ -458,13 +466,13 @@ impl<'a> SentimentIntensityAnalyzer<'a> {
                     }
                 }
             }
-            valence = least_check(valence, tokens, i, self.lexicon);
+            valence = least_check(valence, tokens, i, lex_vals);
         }
 
         // "no" as current word: neutralize when followed by a lexicon word
         if *word == *STATIC_NO
             && i < tokens.len() - 1
-            && self.lexicon.contains_key(&tokens[i + 1]) {
+            && lex_vals[i + 1].is_some() {
             valence = 0.0;
         }
 
@@ -565,14 +573,14 @@ fn but_check(tokens: &[UniCase<&str>], sentiments: &mut Vec<f64>) {
 
 // Fixed: original had impossible `tokens[i-2] == AT && tokens[i-2] == VERY` condition.
 // Python logic: if "least" precedes and is NOT in lexicon, negate — unless preceded by "at" or "very".
-fn least_check(valence: f64, tokens: &[UniCase<&str>], i: usize, lexicon: &HashMap<UniCase<&str>, f64>) -> f64 {
+fn least_check(valence: f64, tokens: &[UniCase<&str>], i: usize, lex_vals: &[Option<f64>]) -> f64 {
     let mut valence = valence;
-    if i > 1 && !lexicon.contains_key(&tokens[i - 1])
+    if i > 1 && lex_vals[i - 1].is_none()
              && tokens[i - 1] == *STATIC_LEAST {
         if tokens[i - 2] != *STATIC_AT && tokens[i - 2] != *STATIC_VERY {
             valence *= NEGATION_SCALAR;
         }
-    } else if i > 0 && !lexicon.contains_key(&tokens[i - 1])
+    } else if i > 0 && lex_vals[i - 1].is_none()
                      && tokens[i - 1] == *STATIC_LEAST {
         valence *= NEGATION_SCALAR;
     }
