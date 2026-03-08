@@ -327,10 +327,11 @@ fn normalize_score(score: f64) -> f64 {
 }
 
 // Checks how previous tokens affect the valence of the current token
-// Fixed: single lookup instead of contains_key + get
-fn scalar_inc_dec(token: &UniCase<&str>, valence: f64, has_mixed_caps: bool) -> f64 {
+// Uses pre-computed booster value to avoid HashMap lookup
+#[inline]
+fn scalar_inc_dec(token: &UniCase<&str>, booster: Option<f64>, valence: f64, has_mixed_caps: bool) -> f64 {
     let mut scalar = 0.0;
-    if let Some(&s) = BOOSTER_DICT.get(token) {
+    if let Some(s) = booster {
         scalar = s;
         if valence < 0.0 {
             scalar *= -1.0;
@@ -415,22 +416,25 @@ impl<'a> SentimentIntensityAnalyzer<'a> {
         let parsedtext = ParsedText::from_text(&text);
         let tokens = &parsedtext.tokens;
 
-        // Pre-compute lexicon values for all tokens (eliminates redundant HashMap
-        // lookups in the inner loop where each token's neighbors are checked)
+        // Pre-compute lexicon and booster values for all tokens (eliminates
+        // redundant HashMap lookups in inner loops)
         let lex_vals: Vec<Option<f64>> = tokens.iter()
             .map(|t| self.lexicon.get(t).copied())
+            .collect();
+        let boost_vals: Vec<Option<f64>> = tokens.iter()
+            .map(|t| BOOSTER_DICT.get(t).copied())
             .collect();
 
         let mut sentiments = Vec::with_capacity(tokens.len());
 
         for (i, word) in tokens.iter().enumerate() {
-            if BOOSTER_DICT.contains_key(word) {
+            if boost_vals[i].is_some() {
                 sentiments.push(0f64);
             } else if i < tokens.len() - 1 && word == &*STATIC_KIND
                                   && tokens[i + 1] == *STATIC_OF {
                 sentiments.push(0f64);
             } else {
-                sentiments.push(self.sentiment_valence(&parsedtext, word, i, &lex_vals));
+                sentiments.push(self.sentiment_valence(&parsedtext, word, i, &lex_vals, &boost_vals));
             }
         }
         but_check(tokens, &mut sentiments);
@@ -438,7 +442,7 @@ impl<'a> SentimentIntensityAnalyzer<'a> {
     }
 
     fn sentiment_valence(&self, parsed: &ParsedText, word: &UniCase<&str>, i: usize,
-                         lex_vals: &[Option<f64>]) -> f64 {
+                         lex_vals: &[Option<f64>], boost_vals: &[Option<f64>]) -> f64 {
         let mut valence = 0f64;
         let tokens = &parsed.tokens;
         let word_valence = lex_vals[i];
@@ -453,7 +457,8 @@ impl<'a> SentimentIntensityAnalyzer<'a> {
             }
             for start_i in 0..3 {
                 if i > start_i && lex_vals[i - start_i - 1].is_none() {
-                    let mut s = scalar_inc_dec(&tokens[i - start_i - 1], valence, parsed.has_mixed_caps);
+                    let j = i - start_i - 1;
+                    let mut s = scalar_inc_dec(&tokens[j], boost_vals[j], valence, parsed.has_mixed_caps);
                     if start_i == 1 {
                         s *= 0.95;
                     } else if start_i == 2 {
@@ -462,7 +467,7 @@ impl<'a> SentimentIntensityAnalyzer<'a> {
                     valence += s;
                     valence = negation_check(valence, tokens, start_i, i);
                     if start_i == 2 {
-                        valence = special_idioms_check(valence, tokens, i);
+                        valence = special_idioms_check(valence, tokens, i, boost_vals);
                     }
                 }
             }
@@ -590,7 +595,7 @@ fn least_check(valence: f64, tokens: &[UniCase<&str>], i: usize, lex_vals: &[Opt
 // Zero-allocation special idioms check
 // Uses pre-split idiom word sequences instead of joining tokens into strings
 // Uses direct BOOSTER_DICT lookups instead of iterating all entries
-fn special_idioms_check(valence: f64, tokens: &[UniCase<&str>], i: usize) -> f64 {
+fn special_idioms_check(valence: f64, tokens: &[UniCase<&str>], i: usize, boost_vals: &[Option<f64>]) -> f64 {
     assert!(i > 2);
     let mut valence = valence;
     let mut end_i = i + 1;
@@ -614,9 +619,9 @@ fn special_idioms_check(valence: f64, tokens: &[UniCase<&str>], i: usize) -> f64
         }
     }
 
-    // Check previous 3 tokens in BOOSTER_DICT directly (3 lookups instead of ~80 iterations)
+    // Check previous 3 tokens using pre-computed booster values (O(1) array access)
     for j in (i - 3)..i {
-        if let Some(&val) = BOOSTER_DICT.get(&tokens[j]) {
+        if let Some(val) = boost_vals[j] {
             valence += val;
         }
     }
