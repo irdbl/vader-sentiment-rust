@@ -258,16 +258,28 @@ struct ParsedText<'a> {
 
 impl<'a> ParsedText<'a> {
     fn from_text(text: &'a str) -> ParsedText<'a> {
-        let tokens = ParsedText::tokenize(text);
-        let has_mixed_caps = ParsedText::has_mixed_caps(&tokens);
+        // Combined tokenize + has_mixed_caps in single pass
+        let mut tokens = Vec::new();
+        let (mut has_caps, mut has_non_caps) = (false, false);
+        for word in text.split_whitespace() {
+            let stripped = ParsedText::strip_punc_if_word(word);
+            if is_all_caps(stripped) {
+                has_caps = true;
+            } else {
+                has_non_caps = true;
+            }
+            tokens.push(UniCase::new(stripped));
+        }
         let punc_amplifier = ParsedText::get_punctuation_emphasis(text);
         ParsedText {
             tokens,
-            has_mixed_caps,
+            has_mixed_caps: has_caps && has_non_caps,
             punc_amplifier,
         }
     }
 
+    // Kept for tests
+    #[cfg(test)]
     fn tokenize(text: &str) -> Vec<UniCase<&str>> {
         text.split_whitespace()
             .map(ParsedText::strip_punc_if_word)
@@ -275,17 +287,8 @@ impl<'a> ParsedText<'a> {
             .collect()
     }
 
-    // Removes punctuation from words, ie "hello!!!" -> "hello" and ",don't??" -> "don't"
-    // Keeps most emoticons, ie ":^)" -> ":^)"
-    fn strip_punc_if_word(token: &str) -> &str {
-        let stripped = token.trim_matches(is_punctuation);
-        if stripped.len() <= 2 {
-            return token;
-        }
-        stripped
-    }
-
-    // Determines if message has a mix of both all caps and non all caps words
+    // Kept for tests
+    #[cfg(test)]
     fn has_mixed_caps<S: AsRef<str>>(tokens: &[S]) -> bool {
         let (mut has_caps, mut has_non_caps) = (false, false);
         for token in tokens.iter() {
@@ -299,6 +302,14 @@ impl<'a> ParsedText<'a> {
             }
         }
         false
+    }
+
+    fn strip_punc_if_word(token: &str) -> &str {
+        let stripped = token.trim_matches(is_punctuation);
+        if stripped.len() <= 2 {
+            return token;
+        }
+        stripped
     }
 
     // Uses empirical values to determine how the use of '?' and '!' contribute to sentiment
@@ -466,13 +477,17 @@ impl<'a> SentimentIntensityAnalyzer<'a> {
         let parsedtext = ParsedText::from_text(&text);
         let tokens = &parsedtext.tokens;
 
-        // Re-use scratch vecs: clear and refill (keeps allocated capacity)
+        // Single pass: pre-compute lexicon + booster lookups and has_mixed_caps
         scratch.lex_vals.clear();
-        scratch.lex_vals.extend(tokens.iter().map(|t| self.lexicon.get(t).copied()));
         scratch.boost_vals.clear();
-        scratch.boost_vals.extend(tokens.iter().map(|t| BOOSTER_DICT.get(t).copied()));
         scratch.sentiments.clear();
+        scratch.lex_vals.reserve(tokens.len());
+        scratch.boost_vals.reserve(tokens.len());
         scratch.sentiments.reserve(tokens.len());
+        for t in tokens {
+            scratch.lex_vals.push(self.lexicon.get(t).copied());
+            scratch.boost_vals.push(BOOSTER_DICT.get(t).copied());
+        }
 
         for (i, word) in tokens.iter().enumerate() {
             if scratch.boost_vals[i].is_some() {
