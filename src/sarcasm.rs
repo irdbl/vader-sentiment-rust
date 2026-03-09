@@ -60,11 +60,11 @@ impl Default for SarcasmConfig {
             surface_weight: 0.4,
             intensity_weight: 0.1,
             sentiment_threshold: 0.3,
-            slash_s_bonus: 0.8,
-            scare_quote_bonus: 0.2,
-            idiom_bonus: 0.25,
-            excessive_punct_bonus: 0.15,
-            all_caps_bonus: 0.15,
+            slash_s_bonus: 0.85,
+            scare_quote_bonus: 0.25,
+            idiom_bonus: 0.35,
+            excessive_punct_bonus: 0.2,
+            all_caps_bonus: 0.1,
         }
     }
 }
@@ -111,7 +111,11 @@ const SARCASTIC_IDIOMS: &[&str] = &[
     "nice going",
     "real smooth",
     "good luck with that",
+    "just what i needed",
     "just what i was thinking",
+    "that's perfect",
+    "well done",
+    "well played",
     "like a boss",
     "i know right",
     "can't wait",
