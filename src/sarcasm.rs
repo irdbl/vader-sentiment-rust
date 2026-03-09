@@ -59,7 +59,7 @@ impl Default for SarcasmConfig {
             incongruity_weight: 0.58,
             surface_weight: 0.16,
             intensity_weight: 0.25,
-            sentiment_threshold: 0.28,
+            sentiment_threshold: 0.26,
             // Bonuses calibrated for surface_weight=1.0 in evaluator.
             // /s tag is strongest signal; scare quotes weakest (most are legit on Reddit).
             slash_s_bonus: 0.8,
@@ -134,6 +134,9 @@ const SARCASTIC_IDIOMS: &[&str] = &[
     "when pigs fly",
     "this is exactly why we can't have nice things",
     "oh wah",
+    "because that makes sense",
+    "well that's helpful",
+    "well thats helpful",
 ];
 
 /// Sarcasm detector that wraps a `SentimentIntensityAnalyzer`.
