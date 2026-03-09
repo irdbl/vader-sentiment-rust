@@ -63,10 +63,10 @@ impl Default for SarcasmConfig {
             // Bonuses calibrated for surface_weight=1.0 in evaluator.
             // /s tag is strongest signal; scare quotes weakest (most are legit on Reddit).
             slash_s_bonus: 0.8,
-            scare_quote_bonus: 0.05,
-            idiom_bonus: 0.12,
-            excessive_punct_bonus: 0.03,
-            all_caps_bonus: 0.07,
+            scare_quote_bonus: 0.06,
+            idiom_bonus: 0.15,
+            excessive_punct_bonus: 0.04,
+            all_caps_bonus: 0.08,
         }
     }
 }
@@ -101,6 +101,7 @@ const SARCASTIC_IDIOMS: &[&str] = &[
     "must be nice",
     "what could go wrong",
     "what could possibly go wrong",
+    "what else could go wrong",
     "cool story",
     "cool story bro",
     "so brave",
@@ -131,6 +132,7 @@ const SARCASTIC_IDIOMS: &[&str] = &[
     "that'll be the day",
     "i'll believe it when i see it",
     "when pigs fly",
+    "this is exactly why we can't have nice things",
 ];
 
 /// Sarcasm detector that wraps a `SentimentIntensityAnalyzer`.
