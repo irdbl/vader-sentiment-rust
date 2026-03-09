@@ -56,15 +56,17 @@ pub struct SarcasmConfig {
 impl Default for SarcasmConfig {
     fn default() -> Self {
         SarcasmConfig {
-            incongruity_weight: 0.4,
-            surface_weight: 0.45,
-            intensity_weight: 0.15,
+            incongruity_weight: 0.55,
+            surface_weight: 0.25,
+            intensity_weight: 0.2,
             sentiment_threshold: 0.3,
-            slash_s_bonus: 0.9,
-            scare_quote_bonus: 0.3,
-            idiom_bonus: 0.45,
-            excessive_punct_bonus: 0.25,
-            all_caps_bonus: 0.12,
+            // Bonuses calibrated for surface_weight=1.0 in evaluator.
+            // /s tag is strongest signal; scare quotes weakest (most are legit on Reddit).
+            slash_s_bonus: 0.8,
+            scare_quote_bonus: 0.04,
+            idiom_bonus: 0.12,
+            excessive_punct_bonus: 0.03,
+            all_caps_bonus: 0.06,
         }
     }
 }
@@ -93,7 +95,6 @@ const SARCASTIC_IDIOMS: &[&str] = &[
     "real classy",
     "sure thing",
     "tell me about it",
-    "tongue-in-cheek",
     "you don't say",
     "color me shocked",
     "shocking",
@@ -112,18 +113,15 @@ const SARCASTIC_IDIOMS: &[&str] = &[
     "nice going",
     "real smooth",
     "good luck with that",
-    "just what i needed",
-    "just what i was thinking",
-    "that's perfect",
-    "well done",
-    "well played",
-    "like a boss",
-    "i know right",
-    "can't wait",
-    "cant wait",
     "thanks for nothing",
-    "hooray for",
-    "good job team",
+    "how convenient",
+    "how fitting",
+    "oh how nice",
+    "bravo",
+    "what a concept",
+    "super helpful",
+    "my favorite part",
+    "love how",
 ];
 
 /// Sarcasm detector that wraps a `SentimentIntensityAnalyzer`.
