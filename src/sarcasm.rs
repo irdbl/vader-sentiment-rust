@@ -56,15 +56,15 @@ pub struct SarcasmConfig {
 impl Default for SarcasmConfig {
     fn default() -> Self {
         SarcasmConfig {
-            incongruity_weight: 0.55,
-            surface_weight: 0.35,
+            incongruity_weight: 0.5,
+            surface_weight: 0.4,
             intensity_weight: 0.1,
             sentiment_threshold: 0.3,
-            slash_s_bonus: 0.85,
-            scare_quote_bonus: 0.15,
-            idiom_bonus: 0.2,
-            excessive_punct_bonus: 0.1,
-            all_caps_bonus: 0.12,
+            slash_s_bonus: 0.8,
+            scare_quote_bonus: 0.2,
+            idiom_bonus: 0.25,
+            excessive_punct_bonus: 0.15,
+            all_caps_bonus: 0.15,
         }
     }
 }
@@ -114,6 +114,11 @@ const SARCASTIC_IDIOMS: &[&str] = &[
     "just what i was thinking",
     "like a boss",
     "i know right",
+    "can't wait",
+    "cant wait",
+    "thanks for nothing",
+    "hooray for",
+    "good job team",
 ];
 
 /// Sarcasm detector that wraps a `SentimentIntensityAnalyzer`.
