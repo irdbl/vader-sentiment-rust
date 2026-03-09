@@ -63,10 +63,10 @@ impl Default for SarcasmConfig {
             // Bonuses calibrated for surface_weight=1.0 in evaluator.
             // /s tag is strongest signal; scare quotes weakest (most are legit on Reddit).
             slash_s_bonus: 0.8,
-            scare_quote_bonus: 0.04,
-            idiom_bonus: 0.12,
-            excessive_punct_bonus: 0.03,
-            all_caps_bonus: 0.06,
+            scare_quote_bonus: 0.06,
+            idiom_bonus: 0.15,
+            excessive_punct_bonus: 0.04,
+            all_caps_bonus: 0.08,
         }
     }
 }
@@ -122,6 +122,9 @@ const SARCASTIC_IDIOMS: &[&str] = &[
     "super helpful",
     "my favorite part",
     "love how",
+    "i love how",
+    "oh how convenient",
+    "oh how fitting",
 ];
 
 /// Sarcasm detector that wraps a `SentimentIntensityAnalyzer`.
