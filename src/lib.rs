@@ -65,7 +65,7 @@ const MAX_EMARK: i32 = 4;
 const MAX_QMARK: i32 = 3;
 const MAX_QMARK_INCR: f64 = 0.96;
 
-const NORMALIZATION_ALPHA: f64 = 27.0;
+const NORMALIZATION_ALPHA: f64 = 28.0;
 const MISSING_BITS: u64 = 0x7ff8_0000_0000_0001;
 const MISSING_VALUE: f64 = f64::from_bits(MISSING_BITS);
 const TARGET_MAX_TOKEN_DISTANCE: usize = 6;
@@ -322,6 +322,7 @@ static SPECIAL_CASE_IDIOMS: LazyLock<FxHashMap<UniCase<&'static str>, f64>> = La
         ("kiss of death", -1.5),
         ("to die for", 3.0),
         ("beating heart", 3.1),
+        ("damn good", 2.1),
         ("broken heart", -2.9),
     ];
     let mut map = FxHashMap::with_capacity_and_hasher(entries.len(), FxBuildHasher::default());
