@@ -65,7 +65,7 @@ const MAX_EMARK: i32 = 4;
 const MAX_QMARK: i32 = 3;
 const MAX_QMARK_INCR: f64 = 0.96;
 
-const NORMALIZATION_ALPHA: f64 = 15.7;
+const NORMALIZATION_ALPHA: f64 = 16.2;
 const MISSING_BITS: u64 = 0x7ff8_0000_0000_0001;
 const MISSING_VALUE: f64 = f64::from_bits(MISSING_BITS);
 const TARGET_MAX_TOKEN_DISTANCE: usize = 6;
