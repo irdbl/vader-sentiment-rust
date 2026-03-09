@@ -57,16 +57,16 @@ impl Default for SarcasmConfig {
     fn default() -> Self {
         SarcasmConfig {
             incongruity_weight: 0.58,
-            surface_weight: 0.17,
+            surface_weight: 0.16,
             intensity_weight: 0.25,
             sentiment_threshold: 0.30,
             // Bonuses calibrated for surface_weight=1.0 in evaluator.
             // /s tag is strongest signal; scare quotes weakest (most are legit on Reddit).
             slash_s_bonus: 0.8,
-            scare_quote_bonus: 0.06,
-            idiom_bonus: 0.15,
-            excessive_punct_bonus: 0.04,
-            all_caps_bonus: 0.08,
+            scare_quote_bonus: 0.05,
+            idiom_bonus: 0.12,
+            excessive_punct_bonus: 0.03,
+            all_caps_bonus: 0.07,
         }
     }
 }
@@ -114,6 +114,7 @@ const SARCASTIC_IDIOMS: &[&str] = &[
     "real smooth",
     "good luck with that",
     "thanks for nothing",
+    "thanks, i hate it",
     "how convenient",
     "how fitting",
     "oh how nice",
