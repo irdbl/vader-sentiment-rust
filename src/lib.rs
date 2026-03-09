@@ -4,11 +4,12 @@
  * Sentiment Analysis of Social Media Text. Eighth International Conference on
  * Weblogs and Social Media (ICWSM-14). Ann Arbor, MI, June 2014.
  **/
-
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::cmp::min;
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
+use std::ops::Range;
 use std::sync::LazyLock;
 
 use aho_corasick::AhoCorasick;
@@ -22,12 +23,16 @@ pub struct FxHasher(u64);
 
 impl Default for FxHasher {
     #[inline]
-    fn default() -> Self { FxHasher(0) }
+    fn default() -> Self {
+        FxHasher(0)
+    }
 }
 
 impl Hasher for FxHasher {
     #[inline]
-    fn finish(&self) -> u64 { self.0 }
+    fn finish(&self) -> u64 {
+        self.0
+    }
     #[inline]
     fn write(&mut self, bytes: &[u8]) {
         for &b in bytes {
@@ -61,6 +66,9 @@ const MAX_QMARK: i32 = 3;
 const MAX_QMARK_INCR: f64 = 0.96;
 
 const NORMALIZATION_ALPHA: f64 = 15.0;
+const MISSING_BITS: u64 = 0x7ff8_0000_0000_0001;
+const MISSING_VALUE: f64 = f64::from_bits(MISSING_BITS);
+const TARGET_MAX_TOKEN_DISTANCE: usize = 6;
 
 static RAW_LEXICON: &str = include_str!("resources/vader_lexicon.txt");
 static RAW_EMOJI_LEXICON: &str = include_str!("resources/emoji_utf8_lexicon.txt");
@@ -83,18 +91,124 @@ fn is_punctuation(c: char) -> bool {
     code < 128 && (PUNCT_BITSET >> code) & 1 == 1
 }
 
+#[inline]
+fn has_value(v: f64) -> bool {
+    v.to_bits() != MISSING_BITS
+}
+
+fn target_token_indices(token_offsets: &[(usize, usize)], span: &Range<usize>) -> Vec<usize> {
+    let mut targets: Vec<usize> = token_offsets
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &(start, end))| {
+            if end > span.start && start < span.end {
+                Some(i)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if !targets.is_empty() {
+        return targets;
+    }
+
+    // If the span doesn't overlap token boundaries (e.g., points between words),
+    // fall back to the nearest token so callers still get a usable score.
+    let mid = span.start + (span.end - span.start) / 2;
+    let nearest = token_offsets
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, &(start, end))| {
+            if mid < start {
+                start - mid
+            } else if mid > end {
+                mid - end
+            } else {
+                0
+            }
+        })
+        .map(|(i, _)| i);
+
+    if let Some(i) = nearest {
+        targets.push(i);
+    }
+
+    targets
+}
+
+#[inline]
+fn token_distance(i: usize, anchors: &[usize]) -> usize {
+    anchors
+        .iter()
+        .map(|&a| a.abs_diff(i))
+        .min()
+        .unwrap_or(usize::MAX)
+}
+
 // --- Static data (LazyLock replaces lazy_static + maplit) ---
 
 static NEGATION_TOKENS: LazyLock<FxHashSet<UniCase<&'static str>>> = LazyLock::new(|| {
     let words = [
-        "aint", "arent", "cannot", "cant", "couldnt", "darent", "didnt", "doesnt",
-        "ain't", "aren't", "can't", "couldn't", "daren't", "didn't", "doesn't",
-        "dont", "hadnt", "hasnt", "havent", "isnt", "mightnt", "mustnt", "neither",
-        "don't", "hadn't", "hasn't", "haven't", "isn't", "mightn't", "mustn't",
-        "neednt", "needn't", "never", "none", "nope", "nor", "not", "nothing", "nowhere",
-        "oughtnt", "shant", "shouldnt", "uhuh", "wasnt", "werent",
-        "oughtn't", "shan't", "shouldn't", "uh-uh", "wasn't", "weren't",
-        "without", "wont", "wouldnt", "won't", "wouldn't", "rarely", "seldom", "despite",
+        "aint",
+        "arent",
+        "cannot",
+        "cant",
+        "couldnt",
+        "darent",
+        "didnt",
+        "doesnt",
+        "ain't",
+        "aren't",
+        "can't",
+        "couldn't",
+        "daren't",
+        "didn't",
+        "doesn't",
+        "dont",
+        "hadnt",
+        "hasnt",
+        "havent",
+        "isnt",
+        "mightnt",
+        "mustnt",
+        "neither",
+        "don't",
+        "hadn't",
+        "hasn't",
+        "haven't",
+        "isn't",
+        "mightn't",
+        "mustn't",
+        "neednt",
+        "needn't",
+        "never",
+        "none",
+        "nope",
+        "nor",
+        "not",
+        "nothing",
+        "nowhere",
+        "oughtnt",
+        "shant",
+        "shouldnt",
+        "uhuh",
+        "wasnt",
+        "werent",
+        "oughtn't",
+        "shan't",
+        "shouldn't",
+        "uh-uh",
+        "wasn't",
+        "weren't",
+        "without",
+        "wont",
+        "wouldnt",
+        "won't",
+        "wouldn't",
+        "rarely",
+        "seldom",
+        "despite",
     ];
     let mut set = FxHashSet::with_capacity_and_hasher(words.len(), FxBuildHasher::default());
     for w in &words {
@@ -105,38 +219,90 @@ static NEGATION_TOKENS: LazyLock<FxHashSet<UniCase<&'static str>>> = LazyLock::n
 
 static BOOSTER_DICT: LazyLock<FxHashMap<UniCase<&'static str>, f64>> = LazyLock::new(|| {
     let entries: &[(&str, f64)] = &[
-        ("absolutely", B_INCR), ("amazingly", B_INCR), ("awfully", B_INCR),
-        ("completely", B_INCR), ("considerable", B_INCR), ("considerably", B_INCR),
-        ("decidedly", B_INCR), ("deeply", B_INCR), ("effing", B_INCR),
-        ("enormous", B_INCR), ("enormously", B_INCR),
-        ("entirely", B_INCR), ("especially", B_INCR), ("exceptional", B_INCR),
+        ("absolutely", B_INCR),
+        ("amazingly", B_INCR),
+        ("awfully", B_INCR),
+        ("completely", B_INCR),
+        ("considerable", B_INCR),
+        ("considerably", B_INCR),
+        ("decidedly", B_INCR),
+        ("deeply", B_INCR),
+        ("effing", B_INCR),
+        ("enormous", B_INCR),
+        ("enormously", B_INCR),
+        ("entirely", B_INCR),
+        ("especially", B_INCR),
+        ("exceptional", B_INCR),
         ("exceptionally", B_INCR),
-        ("extreme", B_INCR), ("extremely", B_INCR),
-        ("fabulously", B_INCR), ("flipping", B_INCR), ("flippin", B_INCR),
-        ("frackin", B_INCR), ("fracking", B_INCR),
-        ("fricking", B_INCR), ("frickin", B_INCR), ("frigging", B_INCR),
-        ("friggin", B_INCR), ("fully", B_INCR),
-        ("fuckin", B_INCR), ("fucking", B_INCR), ("fuggin", B_INCR), ("fugging", B_INCR),
-        ("greatly", B_INCR), ("hella", B_INCR), ("highly", B_INCR), ("hugely", B_INCR),
-        ("incredible", B_INCR), ("incredibly", B_INCR), ("intensely", B_INCR),
-        ("major", B_INCR), ("majorly", B_INCR), ("more", B_INCR), ("most", B_INCR),
+        ("extreme", B_INCR),
+        ("extremely", B_INCR),
+        ("fabulously", B_INCR),
+        ("flipping", B_INCR),
+        ("flippin", B_INCR),
+        ("frackin", B_INCR),
+        ("fracking", B_INCR),
+        ("fricking", B_INCR),
+        ("frickin", B_INCR),
+        ("frigging", B_INCR),
+        ("friggin", B_INCR),
+        ("fully", B_INCR),
+        ("fuckin", B_INCR),
+        ("fucking", B_INCR),
+        ("fuggin", B_INCR),
+        ("fugging", B_INCR),
+        ("greatly", B_INCR),
+        ("hella", B_INCR),
+        ("highly", B_INCR),
+        ("hugely", B_INCR),
+        ("incredible", B_INCR),
+        ("incredibly", B_INCR),
+        ("intensely", B_INCR),
+        ("major", B_INCR),
+        ("majorly", B_INCR),
+        ("more", B_INCR),
+        ("most", B_INCR),
         ("particularly", B_INCR),
-        ("purely", B_INCR), ("quite", B_INCR), ("really", B_INCR), ("remarkably", B_INCR),
-        ("so", B_INCR), ("substantially", B_INCR),
-        ("thoroughly", B_INCR), ("total", B_INCR), ("totally", B_INCR),
-        ("tremendous", B_INCR), ("tremendously", B_INCR),
-        ("uber", B_INCR), ("unbelievably", B_INCR), ("unusually", B_INCR),
-        ("utter", B_INCR), ("utterly", B_INCR),
+        ("purely", B_INCR),
+        ("quite", B_INCR),
+        ("really", B_INCR),
+        ("remarkably", B_INCR),
+        ("so", B_INCR),
+        ("substantially", B_INCR),
+        ("thoroughly", B_INCR),
+        ("total", B_INCR),
+        ("totally", B_INCR),
+        ("tremendous", B_INCR),
+        ("tremendously", B_INCR),
+        ("uber", B_INCR),
+        ("unbelievably", B_INCR),
+        ("unusually", B_INCR),
+        ("utter", B_INCR),
+        ("utterly", B_INCR),
         ("very", B_INCR),
-        ("almost", B_DECR), ("barely", B_DECR), ("hardly", B_DECR),
+        ("almost", B_DECR),
+        ("barely", B_DECR),
+        ("hardly", B_DECR),
         ("just enough", B_DECR),
-        ("kind of", B_DECR), ("kinda", B_DECR), ("kindof", B_DECR), ("kind-of", B_DECR),
-        ("less", B_DECR), ("little", B_DECR), ("marginal", B_DECR),
+        ("kind of", B_DECR),
+        ("kinda", B_DECR),
+        ("kindof", B_DECR),
+        ("kind-of", B_DECR),
+        ("less", B_DECR),
+        ("little", B_DECR),
+        ("marginal", B_DECR),
         ("marginally", B_DECR),
-        ("occasional", B_DECR), ("occasionally", B_DECR), ("partly", B_DECR),
-        ("scarce", B_DECR), ("scarcely", B_DECR), ("slight", B_DECR),
-        ("slightly", B_DECR), ("somewhat", B_DECR),
-        ("sort of", B_DECR), ("sorta", B_DECR), ("sortof", B_DECR), ("sort-of", B_DECR),
+        ("occasional", B_DECR),
+        ("occasionally", B_DECR),
+        ("partly", B_DECR),
+        ("scarce", B_DECR),
+        ("scarcely", B_DECR),
+        ("slight", B_DECR),
+        ("slightly", B_DECR),
+        ("somewhat", B_DECR),
+        ("sort of", B_DECR),
+        ("sorta", B_DECR),
+        ("sortof", B_DECR),
+        ("sort-of", B_DECR),
     ];
     let mut map = FxHashMap::with_capacity_and_hasher(entries.len(), FxBuildHasher::default());
     for &(w, v) in entries {
@@ -147,9 +313,16 @@ static BOOSTER_DICT: LazyLock<FxHashMap<UniCase<&'static str>, f64>> = LazyLock:
 
 static SPECIAL_CASE_IDIOMS: LazyLock<FxHashMap<UniCase<&'static str>, f64>> = LazyLock::new(|| {
     let entries: &[(&str, f64)] = &[
-        ("the shit", 3.0), ("the bomb", 3.0), ("bad ass", 1.5), ("badass", 1.5),
-        ("bus stop", 0.0), ("yeah right", -2.0), ("kiss of death", -1.5),
-        ("to die for", 3.0), ("beating heart", 3.1), ("broken heart", -2.9),
+        ("the shit", 3.0),
+        ("the bomb", 3.0),
+        ("bad ass", 1.5),
+        ("badass", 1.5),
+        ("bus stop", 0.0),
+        ("yeah right", -2.0),
+        ("kiss of death", -1.5),
+        ("to die for", 3.0),
+        ("beating heart", 3.1),
+        ("broken heart", -2.9),
     ];
     let mut map = FxHashMap::with_capacity_and_hasher(entries.len(), FxBuildHasher::default());
     for &(w, v) in entries {
@@ -159,20 +332,22 @@ static SPECIAL_CASE_IDIOMS: LazyLock<FxHashMap<UniCase<&'static str>, f64>> = La
 });
 
 // Pre-split special case idioms into word sequences for zero-alloc matching
-static SPECIAL_IDIOMS_SPLIT: LazyLock<Vec<(Vec<UniCase<&'static str>>, f64)>> = LazyLock::new(|| {
-    SPECIAL_CASE_IDIOMS.iter().map(|(key, &val)| {
-        let words: Vec<UniCase<&str>> = key.as_ref().split(' ').map(UniCase::new).collect();
-        (words, val)
-    }).collect()
-});
+static SPECIAL_IDIOMS_SPLIT: LazyLock<Vec<(Vec<UniCase<&'static str>>, f64)>> =
+    LazyLock::new(|| {
+        SPECIAL_CASE_IDIOMS
+            .iter()
+            .map(|(key, &val)| {
+                let words: Vec<UniCase<&str>> = key.as_ref().split(' ').map(UniCase::new).collect();
+                (words, val)
+            })
+            .collect()
+    });
 
-pub static LEXICON: LazyLock<FxHashMap<UniCase<&'static str>, f64>> = LazyLock::new(|| {
-    parse_raw_lexicon(RAW_LEXICON)
-});
+pub static LEXICON: LazyLock<FxHashMap<UniCase<&'static str>, f64>> =
+    LazyLock::new(|| parse_raw_lexicon(RAW_LEXICON));
 
-pub static EMOJI_LEXICON: LazyLock<FxHashMap<&'static str, &'static str>> = LazyLock::new(|| {
-    parse_raw_emoji_lexicon(RAW_EMOJI_LEXICON)
-});
+pub static EMOJI_LEXICON: LazyLock<FxHashMap<&'static str, &'static str>> =
+    LazyLock::new(|| parse_raw_emoji_lexicon(RAW_EMOJI_LEXICON));
 
 // Aho-Corasick automaton for SIMD-accelerated emoji matching
 static EMOJI_AC: LazyLock<(AhoCorasick, Vec<&'static str>)> = LazyLock::new(|| {
@@ -180,7 +355,9 @@ static EMOJI_AC: LazyLock<(AhoCorasick, Vec<&'static str>)> = LazyLock::new(|| {
     let mut patterns = Vec::with_capacity(3600);
     let mut descriptions = Vec::with_capacity(3600);
     for line in lines {
-        if line.is_empty() { continue; }
+        if line.is_empty() {
+            continue;
+        }
         let mut split = line.split('\t');
         let emoji = split.next().unwrap();
         let desc = split.next().unwrap();
@@ -235,7 +412,10 @@ pub fn parse_raw_lexicon(raw_lexicon: &str) -> FxHashMap<UniCase<&str>, f64> {
 }
 
 pub fn parse_raw_emoji_lexicon(raw_emoji_lexicon: &str) -> FxHashMap<&str, &str> {
-    let lines: Vec<&str> = raw_emoji_lexicon.trim_end_matches('\n').split('\n').collect();
+    let lines: Vec<&str> = raw_emoji_lexicon
+        .trim_end_matches('\n')
+        .split('\n')
+        .collect();
     let mut emoji_dict = FxHashMap::with_capacity_and_hasher(lines.len(), FxBuildHasher::default());
     for line in lines {
         if line.is_empty() {
@@ -276,6 +456,45 @@ impl<'a> ParsedText<'a> {
             has_mixed_caps: has_caps && has_non_caps,
             punc_amplifier,
         }
+    }
+
+    fn from_text_with_offsets(text: &'a str) -> (ParsedText<'a>, Vec<(usize, usize)>) {
+        let mut tokens = Vec::new();
+        let mut token_offsets = Vec::new();
+        let (mut has_caps, mut has_non_caps) = (false, false);
+        let mut search_start = 0usize;
+
+        for raw_word in text.split_whitespace() {
+            let rel = text[search_start..].find(raw_word).unwrap_or(0);
+            let raw_start = search_start + rel;
+            let raw_end = raw_start + raw_word.len();
+            search_start = raw_end;
+
+            let stripped = ParsedText::strip_punc_if_word(raw_word);
+            let (token, start, end) = if stripped.len() <= 2 {
+                (raw_word, raw_start, raw_end)
+            } else {
+                let leading = raw_word.len() - raw_word.trim_start_matches(is_punctuation).len();
+                let trailing = raw_word.len() - raw_word.trim_end_matches(is_punctuation).len();
+                (stripped, raw_start + leading, raw_end - trailing)
+            };
+
+            if is_all_caps(token) {
+                has_caps = true;
+            } else {
+                has_non_caps = true;
+            }
+
+            tokens.push(UniCase::new(token));
+            token_offsets.push((start, end));
+        }
+
+        let parsed = ParsedText {
+            tokens,
+            has_mixed_caps: has_caps && has_non_caps,
+            punc_amplifier: ParsedText::get_punctuation_emphasis(text),
+        };
+        (parsed, token_offsets)
     }
 
     // Kept for tests
@@ -366,10 +585,10 @@ fn normalize_score(score: f64) -> f64 {
 // Checks how previous tokens affect the valence of the current token
 // Uses pre-computed booster value to avoid HashMap lookup
 #[inline]
-fn scalar_inc_dec(token: &UniCase<&str>, booster: Option<f64>, valence: f64, has_mixed_caps: bool) -> f64 {
+fn scalar_inc_dec(token: &UniCase<&str>, booster: f64, valence: f64, has_mixed_caps: bool) -> f64 {
     let mut scalar = 0.0;
-    if let Some(s) = booster {
-        scalar = s;
+    if has_value(booster) {
+        scalar = booster;
         if valence < 0.0 {
             scalar *= -1.0;
         }
@@ -401,8 +620,8 @@ fn sum_sentiment_scores(scores: &[f64]) -> (f64, f64, u32) {
 /// Reusable scratch buffers to eliminate per-call allocation churn.
 /// Create once and pass to `polarity_scores_with_scratch` for best throughput.
 pub struct Scratch {
-    lex_vals: Vec<Option<f64>>,
-    boost_vals: Vec<Option<f64>>,
+    lex_vals: Vec<f64>,
+    boost_vals: Vec<f64>,
     sentiments: Vec<f64>,
 }
 
@@ -416,25 +635,30 @@ impl Scratch {
     }
 }
 
+thread_local! {
+    static TLS_SCRATCH: RefCell<Scratch> = RefCell::new(Scratch::new());
+}
+
 pub struct SentimentIntensityAnalyzer<'a> {
     lexicon: &'a FxHashMap<UniCase<&'a str>, f64>,
 }
 
 impl<'a> SentimentIntensityAnalyzer<'a> {
     pub fn new() -> SentimentIntensityAnalyzer<'static> {
-        SentimentIntensityAnalyzer {
-            lexicon: &LEXICON,
-        }
+        SentimentIntensityAnalyzer { lexicon: &LEXICON }
     }
 
-    pub fn from_lexicon<'b>(lexicon: &'b FxHashMap<UniCase<&str>, f64>) ->
-                                        SentimentIntensityAnalyzer<'b> {
-        SentimentIntensityAnalyzer {
-            lexicon,
-        }
+    pub fn from_lexicon<'b>(
+        lexicon: &'b FxHashMap<UniCase<&str>, f64>,
+    ) -> SentimentIntensityAnalyzer<'b> {
+        SentimentIntensityAnalyzer { lexicon }
     }
 
-    fn get_total_sentiment(&self, sentiments: &[f64], punct_emph_amplifier: f64) -> SentimentScores {
+    fn get_total_sentiment(
+        &self,
+        sentiments: &[f64],
+        punct_emph_amplifier: f64,
+    ) -> SentimentScores {
         let (mut neg, mut neu, mut pos, mut compound) = (0f64, 0f64, 0f64, 0f64);
         if !sentiments.is_empty() {
             let mut total_sentiment: f64 = sentiments.iter().sum();
@@ -467,17 +691,148 @@ impl<'a> SentimentIntensityAnalyzer<'a> {
     }
 
     pub fn polarity_scores(&self, text: &str) -> SentimentScores {
-        let mut scratch = Scratch::new();
-        self.polarity_scores_with_scratch(text, &mut scratch)
+        TLS_SCRATCH.with(|cell| {
+            if let Ok(mut scratch) = cell.try_borrow_mut() {
+                self.polarity_scores_with_scratch(text, &mut scratch)
+            } else {
+                // Re-entrant fallback: keep correctness without panicking.
+                let mut scratch = Scratch::new();
+                self.polarity_scores_with_scratch(text, &mut scratch)
+            }
+        })
     }
 
-    /// Analyze sentiment using reusable scratch buffers to avoid per-call allocations.
-    pub fn polarity_scores_with_scratch(&self, text: &str, scratch: &mut Scratch) -> SentimentScores {
-        let text = append_emoji_descriptions(text);
-        let parsedtext = ParsedText::from_text(&text);
+    /// Targeted sentiment for a byte offset range in the original text.
+    /// Range is half-open: `[start, end)`.
+    pub fn polarity_scores_for_offsets(
+        &self,
+        text: &str,
+        start: usize,
+        end: usize,
+    ) -> Option<SentimentScores> {
+        self.polarity_scores_for_span(text, start..end)
+    }
+
+    /// Targeted sentiment for the first exact entity match in the original text.
+    pub fn polarity_scores_for_entity(&self, text: &str, entity: &str) -> Option<SentimentScores> {
+        if entity.is_empty() {
+            return None;
+        }
+        let start = text.find(entity)?;
+        self.polarity_scores_for_span(text, start..start + entity.len())
+    }
+
+    /// Targeted sentiment for a byte span in the original text.
+    /// This keeps offsets stable by avoiding emoji text expansion in this path.
+    pub fn polarity_scores_for_span(
+        &self,
+        text: &str,
+        span: Range<usize>,
+    ) -> Option<SentimentScores> {
+        TLS_SCRATCH.with(|cell| {
+            if let Ok(mut scratch) = cell.try_borrow_mut() {
+                self.polarity_scores_for_span_with_scratch(text, span.clone(), &mut scratch)
+            } else {
+                let mut scratch = Scratch::new();
+                self.polarity_scores_for_span_with_scratch(text, span, &mut scratch)
+            }
+        })
+    }
+
+    /// Targeted sentiment for a byte span using caller-provided scratch.
+    pub fn polarity_scores_for_span_with_scratch(
+        &self,
+        text: &str,
+        span: Range<usize>,
+        scratch: &mut Scratch,
+    ) -> Option<SentimentScores> {
+        if span.start >= span.end
+            || span.end > text.len()
+            || !text.is_char_boundary(span.start)
+            || !text.is_char_boundary(span.end)
+        {
+            return None;
+        }
+
+        let (parsedtext, token_offsets) = ParsedText::from_text_with_offsets(text);
+        if parsedtext.tokens.is_empty() {
+            return None;
+        }
+
+        let targets = target_token_indices(&token_offsets, &span);
+        if targets.is_empty() {
+            return None;
+        }
+
+        self.compute_sentiments_for_parsed(&parsedtext, scratch);
+
+        let mut range_start = 0usize;
+        let mut range_end = parsedtext.tokens.len();
+        if let Some(but_idx) = parsedtext.tokens.iter().position(|&t| t == *STATIC_BUT) {
+            let target_before_but = targets.iter().any(|&i| i < but_idx);
+            let target_after_but = targets.iter().any(|&i| i > but_idx);
+            if target_before_but && !target_after_but {
+                range_end = but_idx;
+            } else if target_after_but && !target_before_but {
+                range_start = but_idx + 1;
+            }
+        }
+
+        let mut localized = Vec::with_capacity(
+            parsedtext
+                .tokens
+                .len()
+                .min(TARGET_MAX_TOKEN_DISTANCE * 2 + 1),
+        );
+        for i in range_start..range_end {
+            let sentiment = scratch.sentiments[i];
+            let dist = token_distance(i, &targets);
+            if dist <= TARGET_MAX_TOKEN_DISTANCE {
+                let weight = 1.0 / (1.0 + dist as f64);
+                let weighted = sentiment * weight;
+                if weighted != 0.0 {
+                    localized.push(weighted);
+                }
+            }
+        }
+
+        if localized.is_empty() {
+            localized.push(0.0);
+        }
+
+        // Avoid global punctuation emphasis when scoring a local target span.
+        Some(self.get_total_sentiment(&localized, 0.0))
+    }
+
+    /// Analyze a batch sequentially with one reused scratch buffer.
+    pub fn polarity_scores_batch(&self, texts: &[&str]) -> Vec<SentimentScores> {
+        let mut out = Vec::with_capacity(texts.len());
+        self.polarity_scores_batch_into(texts, &mut out);
+        out
+    }
+
+    /// Analyze a batch sequentially into a reusable output vector.
+    pub fn polarity_scores_batch_into(&self, texts: &[&str], out: &mut Vec<SentimentScores>) {
+        out.clear();
+        out.reserve(texts.len());
+        TLS_SCRATCH.with(|cell| {
+            if let Ok(mut scratch) = cell.try_borrow_mut() {
+                for &text in texts {
+                    out.push(self.polarity_scores_with_scratch(text, &mut scratch));
+                }
+            } else {
+                let mut scratch = Scratch::new();
+                for &text in texts {
+                    out.push(self.polarity_scores_with_scratch(text, &mut scratch));
+                }
+            }
+        });
+    }
+
+    fn compute_sentiments_for_parsed(&self, parsedtext: &ParsedText, scratch: &mut Scratch) {
         let tokens = &parsedtext.tokens;
 
-        // Single pass: pre-compute lexicon + booster lookups and has_mixed_caps
+        // Single pass: pre-compute lexicon + booster lookups.
         scratch.lex_vals.clear();
         scratch.boost_vals.clear();
         scratch.sentiments.clear();
@@ -485,31 +840,90 @@ impl<'a> SentimentIntensityAnalyzer<'a> {
         scratch.boost_vals.reserve(tokens.len());
         scratch.sentiments.reserve(tokens.len());
         for t in tokens {
-            scratch.lex_vals.push(self.lexicon.get(t).copied());
-            scratch.boost_vals.push(BOOSTER_DICT.get(t).copied());
+            scratch
+                .lex_vals
+                .push(self.lexicon.get(t).copied().unwrap_or(MISSING_VALUE));
+            scratch
+                .boost_vals
+                .push(BOOSTER_DICT.get(t).copied().unwrap_or(MISSING_VALUE));
         }
 
         for (i, word) in tokens.iter().enumerate() {
-            if scratch.boost_vals[i].is_some() {
+            if has_value(scratch.boost_vals[i]) {
                 scratch.sentiments.push(0f64);
-            } else if i < tokens.len() - 1 && word == &*STATIC_KIND
-                                  && tokens[i + 1] == *STATIC_OF {
+            } else if i < tokens.len() - 1 && word == &*STATIC_KIND && tokens[i + 1] == *STATIC_OF {
                 scratch.sentiments.push(0f64);
             } else {
                 scratch.sentiments.push(self.sentiment_valence(
-                    &parsedtext, word, i, &scratch.lex_vals, &scratch.boost_vals));
+                    parsedtext,
+                    word,
+                    i,
+                    &scratch.lex_vals,
+                    &scratch.boost_vals,
+                ));
+            }
+        }
+
+        but_check(tokens, &mut scratch.sentiments);
+    }
+
+    /// Analyze sentiment using reusable scratch buffers to avoid per-call allocations.
+    pub fn polarity_scores_with_scratch(
+        &self,
+        text: &str,
+        scratch: &mut Scratch,
+    ) -> SentimentScores {
+        let text = append_emoji_descriptions(text);
+        let parsedtext = ParsedText::from_text(&text);
+        let tokens = &parsedtext.tokens;
+
+        scratch.lex_vals.clear();
+        scratch.boost_vals.clear();
+        scratch.sentiments.clear();
+        scratch.lex_vals.reserve(tokens.len());
+        scratch.boost_vals.reserve(tokens.len());
+        scratch.sentiments.reserve(tokens.len());
+        for t in tokens {
+            scratch
+                .lex_vals
+                .push(self.lexicon.get(t).copied().unwrap_or(MISSING_VALUE));
+            scratch
+                .boost_vals
+                .push(BOOSTER_DICT.get(t).copied().unwrap_or(MISSING_VALUE));
+        }
+
+        for (i, word) in tokens.iter().enumerate() {
+            if has_value(scratch.boost_vals[i]) {
+                scratch.sentiments.push(0f64);
+            } else if i < tokens.len() - 1 && word == &*STATIC_KIND && tokens[i + 1] == *STATIC_OF {
+                scratch.sentiments.push(0f64);
+            } else {
+                scratch.sentiments.push(self.sentiment_valence(
+                    &parsedtext,
+                    word,
+                    i,
+                    &scratch.lex_vals,
+                    &scratch.boost_vals,
+                ));
             }
         }
         but_check(tokens, &mut scratch.sentiments);
         self.get_total_sentiment(&scratch.sentiments, parsedtext.punc_amplifier)
     }
 
-    fn sentiment_valence(&self, parsed: &ParsedText, word: &UniCase<&str>, i: usize,
-                         lex_vals: &[Option<f64>], boost_vals: &[Option<f64>]) -> f64 {
+    fn sentiment_valence(
+        &self,
+        parsed: &ParsedText,
+        word: &UniCase<&str>,
+        i: usize,
+        lex_vals: &[f64],
+        boost_vals: &[f64],
+    ) -> f64 {
         let mut valence = 0f64;
         let tokens = &parsed.tokens;
         let word_valence = lex_vals[i];
-        if let Some(wv) = word_valence {
+        if has_value(word_valence) {
+            let wv = word_valence;
             valence = wv;
             if is_all_caps(word.as_ref()) && parsed.has_mixed_caps {
                 if valence > 0f64 {
@@ -519,9 +933,10 @@ impl<'a> SentimentIntensityAnalyzer<'a> {
                 }
             }
             for start_i in 0..3 {
-                if i > start_i && lex_vals[i - start_i - 1].is_none() {
+                if i > start_i && !has_value(lex_vals[i - start_i - 1]) {
                     let j = i - start_i - 1;
-                    let mut s = scalar_inc_dec(&tokens[j], boost_vals[j], valence, parsed.has_mixed_caps);
+                    let mut s =
+                        scalar_inc_dec(&tokens[j], boost_vals[j], valence, parsed.has_mixed_caps);
                     if start_i == 1 {
                         s *= 0.95;
                     } else if start_i == 2 {
@@ -538,18 +953,19 @@ impl<'a> SentimentIntensityAnalyzer<'a> {
         }
 
         // "no" as current word: neutralize when followed by a lexicon word
-        if *word == *STATIC_NO
-            && i < tokens.len() - 1
-            && lex_vals[i + 1].is_some() {
+        if *word == *STATIC_NO && i < tokens.len() - 1 && has_value(lex_vals[i + 1]) {
             valence = 0.0;
         }
 
         // "no" preceding current word: negate using raw lexicon valence
-        if let Some(base) = word_valence {
+        if has_value(word_valence) {
+            let base = word_valence;
             if (i > 0 && tokens[i - 1] == *STATIC_NO)
                 || (i > 1 && tokens[i - 2] == *STATIC_NO)
-                || (i > 2 && tokens[i - 3] == *STATIC_NO
-                    && (tokens[i - 1] == *STATIC_OR || tokens[i - 1] == *STATIC_NOR)) {
+                || (i > 2
+                    && tokens[i - 3] == *STATIC_NO
+                    && (tokens[i - 1] == *STATIC_OR || tokens[i - 1] == *STATIC_NOR))
+            {
                 valence = base * NEGATION_SCALAR;
             }
         }
@@ -601,9 +1017,9 @@ fn negation_check(valence: f64, tokens: &[UniCase<&str>], start_i: usize, i: usi
             valence *= NEGATION_SCALAR;
         }
     } else if start_i == 1 {
-        if tokens[i - 2] == *STATIC_NEVER &&
-          (tokens[i - 1] == *STATIC_SO ||
-           tokens[i - 1] == *STATIC_THIS) {
+        if tokens[i - 2] == *STATIC_NEVER
+            && (tokens[i - 1] == *STATIC_SO || tokens[i - 1] == *STATIC_THIS)
+        {
             valence *= 1.25
         } else if tokens[i - 2] == *STATIC_WITHOUT && tokens[i - 1] == *STATIC_DOUBT {
             valence *= 1.0
@@ -611,13 +1027,15 @@ fn negation_check(valence: f64, tokens: &[UniCase<&str>], start_i: usize, i: usi
             valence *= NEGATION_SCALAR;
         }
     } else if start_i == 2 {
-        if tokens[i - 3] == *STATIC_NEVER &&
-           tokens[i - 2] == *STATIC_SO || tokens[i - 2] == *STATIC_THIS||
-           tokens[i - 1] == *STATIC_SO || tokens[i - 1] == *STATIC_THIS {
+        if tokens[i - 3] == *STATIC_NEVER && tokens[i - 2] == *STATIC_SO
+            || tokens[i - 2] == *STATIC_THIS
+            || tokens[i - 1] == *STATIC_SO
+            || tokens[i - 1] == *STATIC_THIS
+        {
             valence *= 1.25
-        } else if tokens[i - 3] == *STATIC_WITHOUT &&
-                  tokens[i - 2] == *STATIC_DOUBT ||
-                  tokens[i - 1] == *STATIC_DOUBT {
+        } else if tokens[i - 3] == *STATIC_WITHOUT && tokens[i - 2] == *STATIC_DOUBT
+            || tokens[i - 1] == *STATIC_DOUBT
+        {
             valence *= 1.0;
         } else if is_negated(&tokens[i - start_i - 1]) {
             valence *= NEGATION_SCALAR;
@@ -629,31 +1047,26 @@ fn negation_check(valence: f64, tokens: &[UniCase<&str>], start_i: usize, i: usi
 // If "but" is in the tokens, scales down the sentiment of words before "but" and
 // adds more emphasis to the words after
 fn but_check(tokens: &[UniCase<&str>], sentiments: &mut Vec<f64>) {
-    match tokens.iter().position(|&s| s == *STATIC_BUT) {
-        Some(but_index) => {
-            for i in 0..sentiments.len() {
-                if i < but_index {
-                    sentiments[i] *= 0.5;
-                } else if i > but_index {
-                    sentiments[i] *= 1.5;
-                }
+    if let Some(idx) = tokens.iter().position(|&s| s == *STATIC_BUT) {
+        for (i, s) in sentiments.iter_mut().enumerate() {
+            if i < idx {
+                *s *= 0.5;
+            } else if i > idx {
+                *s *= 1.5;
             }
-        },
-        None => return,
+        }
     }
 }
 
 // Fixed: original had impossible `tokens[i-2] == AT && tokens[i-2] == VERY` condition.
 // Python logic: if "least" precedes and is NOT in lexicon, negate — unless preceded by "at" or "very".
-fn least_check(valence: f64, tokens: &[UniCase<&str>], i: usize, lex_vals: &[Option<f64>]) -> f64 {
+fn least_check(valence: f64, tokens: &[UniCase<&str>], i: usize, lex_vals: &[f64]) -> f64 {
     let mut valence = valence;
-    if i > 1 && lex_vals[i - 1].is_none()
-             && tokens[i - 1] == *STATIC_LEAST {
+    if i > 1 && !has_value(lex_vals[i - 1]) && tokens[i - 1] == *STATIC_LEAST {
         if tokens[i - 2] != *STATIC_AT && tokens[i - 2] != *STATIC_VERY {
             valence *= NEGATION_SCALAR;
         }
-    } else if i > 0 && lex_vals[i - 1].is_none()
-                     && tokens[i - 1] == *STATIC_LEAST {
+    } else if i > 0 && !has_value(lex_vals[i - 1]) && tokens[i - 1] == *STATIC_LEAST {
         valence *= NEGATION_SCALAR;
     }
     valence
@@ -662,7 +1075,12 @@ fn least_check(valence: f64, tokens: &[UniCase<&str>], i: usize, lex_vals: &[Opt
 // Zero-allocation special idioms check
 // Uses pre-split idiom word sequences instead of joining tokens into strings
 // Uses direct BOOSTER_DICT lookups instead of iterating all entries
-fn special_idioms_check(valence: f64, tokens: &[UniCase<&str>], i: usize, boost_vals: &[Option<f64>]) -> f64 {
+fn special_idioms_check(
+    valence: f64,
+    tokens: &[UniCase<&str>],
+    i: usize,
+    boost_vals: &[f64],
+) -> f64 {
     assert!(i > 2);
     let mut valence = valence;
     let mut end_i = i + 1;
@@ -688,8 +1106,8 @@ fn special_idioms_check(valence: f64, tokens: &[UniCase<&str>], i: usize, boost_
 
     // Check previous 3 tokens using pre-computed booster values (O(1) array access)
     for j in (i - 3)..i {
-        if let Some(val) = boost_vals[j] {
-            valence += val;
+        if has_value(boost_vals[j]) {
+            valence += boost_vals[j];
         }
     }
 
@@ -697,12 +1115,18 @@ fn special_idioms_check(valence: f64, tokens: &[UniCase<&str>], i: usize, boost_
 }
 
 // Rayon-powered batch analysis
-#[cfg(feature = "parallel")]
 pub fn polarity_scores_batch(texts: &[&str]) -> Vec<SentimentScores> {
     use rayon::prelude::*;
     let analyzer = SentimentIntensityAnalyzer::new();
-    texts.par_iter()
-        .map(|text| analyzer.polarity_scores(text))
+    if texts.len() < 512 {
+        return analyzer.polarity_scores_batch(texts);
+    }
+    texts
+        .par_iter()
+        .with_min_len(64)
+        .map_init(Scratch::new, |scratch, text| {
+            analyzer.polarity_scores_with_scratch(text, scratch)
+        })
         .collect()
 }
 

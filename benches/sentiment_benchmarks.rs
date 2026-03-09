@@ -1,5 +1,5 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
-use vader_sentiment::{SentimentIntensityAnalyzer, Scratch};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use vader_sentiment::{Scratch, SentimentIntensityAnalyzer};
 
 fn short_texts() -> Vec<&'static str> {
     vec![
@@ -30,7 +30,10 @@ fn bench_single_short(c: &mut Criterion) {
     let mut scratch = Scratch::new();
     c.bench_function("single_short_text", |b| {
         b.iter(|| {
-            analyzer.polarity_scores_with_scratch(black_box("VADER is smart, handsome, and funny!"), &mut scratch)
+            analyzer.polarity_scores_with_scratch(
+                black_box("VADER is smart, handsome, and funny!"),
+                &mut scratch,
+            )
         })
     });
 }
@@ -40,9 +43,7 @@ fn bench_single_long(c: &mut Criterion) {
     let mut scratch = Scratch::new();
     let text = long_text();
     c.bench_function("single_long_text", |b| {
-        b.iter(|| {
-            analyzer.polarity_scores_with_scratch(black_box(text), &mut scratch)
-        })
+        b.iter(|| analyzer.polarity_scores_with_scratch(black_box(text), &mut scratch))
     });
 }
 
@@ -51,9 +52,7 @@ fn bench_with_emojis(c: &mut Criterion) {
     let mut scratch = Scratch::new();
     let text = text_with_emojis();
     c.bench_function("text_with_emojis", |b| {
-        b.iter(|| {
-            analyzer.polarity_scores_with_scratch(black_box(text), &mut scratch)
-        })
+        b.iter(|| analyzer.polarity_scores_with_scratch(black_box(text), &mut scratch))
     });
 }
 
@@ -92,14 +91,54 @@ fn bench_batch(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_batch_api(c: &mut Criterion) {
+    let analyzer = SentimentIntensityAnalyzer::new();
+    let texts = short_texts();
+    let batch_1k: Vec<&str> = texts.iter().cycle().take(1000).copied().collect();
+    let batch_10k: Vec<&str> = texts.iter().cycle().take(10_000).copied().collect();
+    let mut out = Vec::new();
+
+    let mut group = c.benchmark_group("batch_api_sequential");
+    group.bench_with_input(BenchmarkId::new("1k", 1000), &batch_1k, |b, texts| {
+        b.iter(|| {
+            analyzer.polarity_scores_batch_into(texts, &mut out);
+            black_box(out.len());
+        })
+    });
+    group.bench_with_input(BenchmarkId::new("10k", 10_000), &batch_10k, |b, texts| {
+        b.iter(|| {
+            analyzer.polarity_scores_batch_into(texts, &mut out);
+            black_box(out.len());
+        })
+    });
+    group.finish();
+}
+
+fn bench_batch_parallel(c: &mut Criterion) {
+    let texts = short_texts();
+    let batch_1k: Vec<&str> = texts.iter().cycle().take(1000).copied().collect();
+    let batch_10k: Vec<&str> = texts.iter().cycle().take(10_000).copied().collect();
+
+    let mut group = c.benchmark_group("batch_api_parallel");
+    group.bench_with_input(BenchmarkId::new("1k", 1000), &batch_1k, |b, texts| {
+        b.iter(|| {
+            black_box(vader_sentiment::polarity_scores_batch(texts));
+        })
+    });
+    group.bench_with_input(BenchmarkId::new("10k", 10_000), &batch_10k, |b, texts| {
+        b.iter(|| {
+            black_box(vader_sentiment::polarity_scores_batch(texts));
+        })
+    });
+    group.finish();
+}
+
 fn bench_punctuation_emphasis(c: &mut Criterion) {
     let analyzer = SentimentIntensityAnalyzer::new();
     let mut scratch = Scratch::new();
     c.bench_function("punctuation_emphasis", |b| {
         let text = "This is amazing!!! Really??? Yes!!! Are you sure??? Absolutely!!!";
-        b.iter(|| {
-            analyzer.polarity_scores_with_scratch(black_box(text), &mut scratch)
-        })
+        b.iter(|| analyzer.polarity_scores_with_scratch(black_box(text), &mut scratch))
     });
 }
 
@@ -122,6 +161,8 @@ criterion_group!(
     bench_with_emojis,
     bench_without_emojis,
     bench_batch,
+    bench_batch_api,
+    bench_batch_parallel,
     bench_punctuation_emphasis,
     bench_negation_heavy,
 );
