@@ -63,8 +63,8 @@ impl Default for SarcasmConfig {
             // Bonuses calibrated for surface_weight=1.0 in evaluator.
             // /s tag is strongest signal; scare quotes weakest (most are legit on Reddit).
             slash_s_bonus: 0.8,
-            scare_quote_bonus: 0.05,
-            idiom_bonus: 0.11,
+            scare_quote_bonus: 0.06,
+            idiom_bonus: 0.15,
             excessive_punct_bonus: 0.04,
             all_caps_bonus: 0.08,
         }
@@ -86,6 +86,7 @@ const SARCASTIC_IDIOMS: &[&str] = &[
     "how wonderful",
     "how lovely",
     "how nice",
+    "how quaint",
     "how original",
     "thanks a lot",
     "big surprise",
@@ -118,6 +119,7 @@ const SARCASTIC_IDIOMS: &[&str] = &[
     "thanks for nothing",
     "whatever you say",
     "thanks, i hate it",
+    "just what we needed",
     "how convenient",
     "how fitting",
     "oh how nice",
