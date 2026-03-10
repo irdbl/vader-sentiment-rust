@@ -57,8 +57,8 @@ impl Default for SarcasmConfig {
     fn default() -> Self {
         SarcasmConfig {
             incongruity_weight: 0.65,
-            surface_weight: 0.11,
-            intensity_weight: 0.24,
+            surface_weight: 0.10,
+            intensity_weight: 0.25,
             sentiment_threshold: 0.22,
             // Bonuses calibrated for surface_weight=1.0 in evaluator.
             // /s tag is strongest signal; scare quotes weakest (most are legit on Reddit).
@@ -149,6 +149,7 @@ const SARCASTIC_IDIOMS: &[&str] = &[
     "sure, jan",
     "give me a break",
     "hold my beer",
+    "sounds legit",
     "that seems legit",
     "i'm sure that'll work",
     "im sure that'll work",
