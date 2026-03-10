@@ -56,8 +56,8 @@ pub struct SarcasmConfig {
 impl Default for SarcasmConfig {
     fn default() -> Self {
         SarcasmConfig {
-            incongruity_weight: 0.67,
-            surface_weight: 0.09,
+            incongruity_weight: 0.65,
+            surface_weight: 0.11,
             intensity_weight: 0.24,
             sentiment_threshold: 0.22,
             // Bonuses calibrated for surface_weight=1.0 in evaluator.
@@ -147,6 +147,11 @@ const SARCASTIC_IDIOMS: &[&str] = &[
     "i bet that will go over well",
     "sure jan",
     "sure, jan",
+    "give me a break",
+    "hold my beer",
+    "that seems legit",
+    "i'm sure that'll work",
+    "im sure that'll work",
     "now we play the waiting game",
 ];
 
