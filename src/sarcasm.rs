@@ -56,15 +56,15 @@ pub struct SarcasmConfig {
 impl Default for SarcasmConfig {
     fn default() -> Self {
         SarcasmConfig {
-            incongruity_weight: 0.66,
-            surface_weight: 0.10,
+            incongruity_weight: 0.67,
+            surface_weight: 0.09,
             intensity_weight: 0.24,
             sentiment_threshold: 0.22,
             // Bonuses calibrated for surface_weight=1.0 in evaluator.
             // /s tag is strongest signal; scare quotes weakest (most are legit on Reddit).
             slash_s_bonus: 0.8,
             scare_quote_bonus: 0.06,
-            idiom_bonus: 0.12,
+            idiom_bonus: 0.15,
             excessive_punct_bonus: 0.04,
             all_caps_bonus: 0.08,
         }
@@ -89,6 +89,7 @@ const SARCASTIC_IDIOMS: &[&str] = &[
     "how nice",
     "how quaint",
     "how original",
+    "how predictable",
     "thanks a lot",
     "big surprise",
     "no kidding",
@@ -146,6 +147,7 @@ const SARCASTIC_IDIOMS: &[&str] = &[
     "i bet that will go over well",
     "sure jan",
     "sure, jan",
+    "now we play the waiting game",
 ];
 
 /// Sarcasm detector that wraps a `SentimentIntensityAnalyzer`.
